@@ -1,0 +1,113 @@
+// ================= SENSOR SETUP =================
+int AnalogValue[5] = {0, 0, 0, 0, 0};
+int AnalogPin[5]   = {4, 5, 6, 7, 15};
+
+// ================= MOTOR SETUP (CALIBRATED) =================
+int motorLeftPWM   = 37;
+int motorLeftPhase = 38;
+int motorRightPWM  = 39;
+int motorRightPhase = 20;
+
+// ================= CALIBRATION VALUES =================
+int threshold = 1500;   // CHANGE after sensor test
+
+// Motor calibration 
+
+int leftBaseSpeed  = 104;
+int rightBaseSpeed = 100;
+
+int leftTurnSpeed  = 80;
+int rightTurnSpeed = 75;
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(motorLeftPWM, OUTPUT);
+  pinMode(motorLeftPhase, OUTPUT);
+  pinMode(motorRightPWM, OUTPUT);
+  pinMode(motorRightPhase, OUTPUT);
+
+  stopMotors();
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+
+  bool onLine[5];
+
+  // ===== SENSOR READING =====
+  for (int i = 0; i < 5; i++) {
+    AnalogValue[i] = analogRead(AnalogPin[i]);
+    Serial.print(AnalogValue[i]);
+    Serial.print("\t");
+
+    if (AnalogValue[i] < threshold)
+      onLine[i] = true;   // white line
+    else
+      onLine[i] = false;  // black
+  }
+  Serial.println();
+
+  // ===== LINE FOLLOWING LOGIC =====
+
+  // STRAIGHT
+  if (onLine[2] && !onLine[1] && !onLine[3]) {
+    driveForward();
+  }
+
+  // SLIGHT LEFT
+  else if (onLine[1] && onLine[2]) {
+    turnLeft();
+  }
+
+  // SLIGHT RIGHT
+  else if (onLine[2] && onLine[3]) {
+    turnRight();
+  }
+
+  // HARD LEFT
+  else if (onLine[0] || onLine[1]) {
+    turnLeft();
+  }
+
+  // HARD RIGHT
+  else if (onLine[3] || onLine[4]) {
+    turnRight();
+  }
+
+  // LINE LOST
+  else {
+    stopMotors();
+  }
+
+  delay(10);  // stability
+}
+
+// ================= MOTOR FUNCTIONS =================
+
+void driveForward() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftBaseSpeed);
+  analogWrite(motorRightPWM, rightBaseSpeed);
+}
+
+void turnLeft() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftTurnSpeed);
+  analogWrite(motorRightPWM, rightBaseSpeed);
+}
+
+void turnRight() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftBaseSpeed);
+  analogWrite(motorRightPWM, rightTurnSpeed);
+}
+
+void stopMotors() {
+  analogWrite(motorLeftPWM, 0);
+  analogWrite(motorRightPWM, 0);
+}
