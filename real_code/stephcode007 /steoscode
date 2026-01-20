@@ -1,0 +1,178 @@
+// ================= SENSOR SETUP =================
+// Mobot line follower board pins (from lab guide example) :contentReference[oaicite:2]{index=2}
+int AnalogValue[5] = {0, 0, 0, 0, 0};
+int AnalogPin[5]   = {4, 5, 6, 7, 15};
+
+// ================= MOTOR SETUP (CALIBRATED) =================
+int motorLeftPWM    = 37;
+int motorLeftPhase  = 38;
+int motorRightPWM   = 39;
+int motorRightPhase = 20;
+
+// ================= YOUR MOTOR CALIBRATION =================
+int leftBaseSpeed  = 208;
+int rightBaseSpeed = 200;
+
+// Safety clamp
+int MIN_PWM = 0;
+int MAX_PWM = 255;
+
+// ================= LINE / SENSOR TUNING =================
+// If you haven't calibrated per-sensor yet, start with these rough values from guide:
+// White ~ <250, Black ~ >3800 :contentReference[oaicite:3]{index=3}
+int whiteRef = 250;     // reading on white line (low)
+int blackRef = 3800;    // reading on black background (high)
+
+// How "certain" we need to be that we see the line
+// (sum of whiteness values must exceed this)
+int lineDetectMin = 250; // tune 150..400
+
+// Simple filtering to reduce noise/jitter
+float filterAlpha = 0.30f; // 0=no smoothing, 0.3 good start
+float filtered[5] = {0,0,0,0,0};
+
+// ================= PD CONTROL =================
+float Kp = 22.0f;   // steering strength (try 15..35)
+float Kd = 70.0f;   // damping (try 40..120)
+
+float lastError = 0;
+unsigned long lastMs = 0;
+
+// ================= HELPERS =================
+int clampPWM(int v) {
+  if (v < MIN_PWM) return MIN_PWM;
+  if (v > MAX_PWM) return MAX_PWM;
+  return v;
+}
+
+void setMotorSpeeds(int leftPWM, int rightPWM) {
+  // Forward only (for line following). If you want reverse, add sign handling.
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, clampPWM(leftPWM));
+  analogWrite(motorRightPWM, clampPWM(rightPWM));
+}
+
+void stopMotors() {
+  analogWrite(motorLeftPWM, 0);
+  analogWrite(motorRightPWM, 0);
+}
+
+// Read + convert to whiteness (0..1000)
+// 1000 = very white (on the line), 0 = very black
+int whitenessFromRaw(int raw) {
+  // Constrain to expected range to avoid weird spikes
+  if (raw < whiteRef) raw = whiteRef;
+  if (raw > blackRef) raw = blackRef;
+
+  // Map: whiteRef -> 1000, blackRef -> 0
+  long w = (long)(blackRef - raw) * 1000L / (long)(blackRef - whiteRef);
+  if (w < 0) w = 0;
+  if (w > 1000) w = 1000;
+  return (int)w;
+}
+
+// Returns:
+//  - position error in range roughly [-2..+2] when line is seen
+//  - sets seen=false if line is not detected
+float computeLineError(bool &seen) {
+  // weights for sensors [0..4]
+  // 0=far left ... 2=center ... 4=far right
+  const int weights[5] = {-2, -1, 0, 1, 2};
+
+  long sumW = 0;
+  long sumWeighted = 0;
+
+  for (int i = 0; i < 5; i++) {
+    int raw = analogRead(AnalogPin[i]);
+    AnalogValue[i] = raw;
+
+    // Filter raw -> filtered
+    filtered[i] = (1.0f - filterAlpha) * filtered[i] + filterAlpha * raw;
+
+    int w = whitenessFromRaw((int)filtered[i]); // 0..1000
+    sumW += w;
+    sumWeighted += (long)w * weights[i];
+
+    // Debug print raw values
+    Serial.print(raw);
+    Serial.print("\t");
+  }
+  Serial.println();
+
+  // Decide if line is present
+  if (sumW < lineDetectMin) {
+    seen = false;
+    return lastError; // hold last direction
+  }
+
+  seen = true;
+
+  // Weighted average gives position error
+  // result around -2..+2
+  float error = (float)sumWeighted / (float)sumW;
+  return error;
+}
+
+// When line is lost: rotate gently toward last known direction
+void reacquireLine() {
+  int searchSpeed = 120;  // tune 80..150
+  if (lastError < 0) {
+    // last seen to the left -> rotate left
+    // left slower, right faster
+    setMotorSpeeds(searchSpeed / 2, searchSpeed);
+  } else {
+    // rotate right
+    setMotorSpeeds(searchSpeed, searchSpeed / 2);
+  }
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(motorLeftPWM, OUTPUT);
+  pinMode(motorLeftPhase, OUTPUT);
+  pinMode(motorRightPWM, OUTPUT);
+  pinMode(motorRightPhase, OUTPUT);
+
+  // Initialize filter with first readings
+  for (int i = 0; i < 5; i++) {
+    filtered[i] = analogRead(AnalogPin[i]);
+  }
+
+  lastMs = millis();
+  stopMotors();
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+  bool seen = false;
+  float error = computeLineError(seen);
+
+  unsigned long now = millis();
+  float dt = (now - lastMs) / 1000.0f;
+  if (dt <= 0) dt = 0.001f;
+  lastMs = now;
+
+  if (!seen) {
+    reacquireLine();
+    delay(5);
+    return;
+  }
+
+  // PD control
+  float dErr = (error - lastError) / dt;
+  lastError = error;
+
+  float correction = Kp * error + Kd * dErr;
+
+  // Mix correction into motor speeds
+  // If error is + (line to right), we steer right by slowing right / speeding left
+  int leftPWM  = (int)(leftBaseSpeed  + correction);
+  int rightPWM = (int)(rightBaseSpeed - correction);
+
+  setMotorSpeeds(leftPWM, rightPWM);
+
+  delay(5);
+}
