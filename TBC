@@ -1,1 +1,132 @@
+// ================= SENSOR SETUP =================
+// WARNING: Pins 6-11 are Internal Flash. Do not use.
+// Please Rewire sensors 2 and 3 to Pin 18 and 19.
+const int AnalogPin[5]   = {4, 5, 18, 19, 15}; 
+int AnalogValue[5]       = {0, 0, 0, 0, 0};
+bool onLine[5]           = {false, false, false, false, false};
 
+// ================= MOTOR SETUP =================
+const int motorLeftPWM    = 37; 
+const int motorLeftPhase  = 38; 
+const int motorRightPWM   = 39; 
+const int motorRightPhase = 21; 
+
+// ================= MEMORY SETUP =================
+// We use these numbers to remember direction
+const int MOVE_STRAIGHT = 0;
+const int MOVE_LEFT     = 1;
+const int MOVE_RIGHT    = 2;
+
+// Default to STRAIGHT (if no previous action exists)
+int lastAction = MOVE_STRAIGHT; 
+
+// ================= TUNING VALUES =================
+int threshold = 2600;   
+
+// MOTOR SPEEDS (0 - 255)
+const int baseSpeed       = 180; 
+const int turnFast        = 180; 
+const int turnSlow        = 80;  
+const int hardTurnFast    = 190;
+const int hardTurnSlow    = 0;   
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(motorLeftPWM, OUTPUT);
+  pinMode(motorLeftPhase, OUTPUT);
+  pinMode(motorRightPWM, OUTPUT);
+  pinMode(motorRightPhase, OUTPUT);
+
+  // Set initial forward direction
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+
+  stopMotors();
+  delay(50); 
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+  readSensors();
+  processMovement();
+}
+
+// ================= HELPER FUNCTIONS =================
+
+void readSensors() {
+  for (int i = 0; i < 5; i++) {
+    AnalogValue[i] = analogRead(AnalogPin[i]);
+    if (AnalogValue[i] < threshold) onLine[i] = true; 
+    else onLine[i] = false; 
+  }
+}
+
+void processMovement() {
+  
+  // 1. CHECK SENSORS & UPDATE MEMORY
+
+  // HARD LEFT
+  if (onLine[0]) {
+    moveRobot(hardTurnSlow, hardTurnFast); 
+    lastAction = MOVE_LEFT; // Remember we turned left
+  }
+
+  // HARD RIGHT
+  else if (onLine[4]) {
+    moveRobot(hardTurnFast, hardTurnSlow); 
+    lastAction = MOVE_RIGHT; // Remember we turned right
+  }
+
+  // SLIGHT LEFT
+  else if (onLine[1]) {
+    moveRobot(turnSlow, turnFast);
+    lastAction = MOVE_LEFT; // Remember we turned left
+  }
+
+  // SLIGHT RIGHT
+  else if (onLine[3]) {
+    moveRobot(turnFast, turnSlow);
+    lastAction = MOVE_RIGHT; // Remember we turned right
+  }
+
+  // FORWARD
+  else if (onLine[2]) {
+    moveRobot(baseSpeed, baseSpeed);
+    lastAction = MOVE_STRAIGHT; // Remember we went straight
+  }
+
+  // Node 
+  else if (onLine[2] && onLine[4] && onLine[0]){
+    moveRobot(baseSpeed, baseSpeed);
+  }
+
+  // 2. LINE LOST - USE MEMORY
+  // If no sensors are triggered, look at 'lastAction'
+  else {
+    if (lastAction == MOVE_LEFT) {
+      // It likely curved left and we missed it, so spin Hard Left to find it
+      moveRobot(hardTurnSlow, hardTurnFast); 
+    }
+    else if (lastAction == MOVE_RIGHT) {
+      // It likely curved right and we missed it, so spin Hard Right to find it
+      moveRobot(hardTurnFast, hardTurnSlow);
+    }
+    else {
+      // lastAction == MOVE_STRAIGHT
+      // We were going straight and lost the line (maybe a gap), keep going straight
+      moveRobot(baseSpeed, baseSpeed);
+    }
+  }
+}
+
+void moveRobot(int leftSpeed, int rightSpeed) {
+  analogWrite(motorLeftPWM, leftSpeed);
+  analogWrite(motorRightPWM, rightSpeed);
+}
+
+void stopMotors() {
+  analogWrite(motorLeftPWM, 0);
+  analogWrite(motorRightPWM, 0);
+}
