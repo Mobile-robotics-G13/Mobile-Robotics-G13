@@ -9,20 +9,21 @@ int motorRightPWM   = 39;
 int motorRightPhase = 20;
 
 // ================= CALIBRATION VALUES =================
-int threshold = 2600;   // from sensor testing
+int threshold = 2700;   // from sensor testing
 
 // Motor calibration
-int leftBaseSpeed   = 180;
+int leftBaseSpeed   = 175;
 int rightBaseSpeed  = 172;
 
-int lightInnerwheel = 160;
+int lightInnerwheel = 165;
 int lightOuterwheel = 172;
 
 int leftTurnSpeed   = 198;
 int rightTurnSpeed  = 190;
 
-int leftHardSpeed   = 190;
-int rightHardSpeed  = 80;   // softened to prevent overshoot
+int leftHardSpeed   = 185;
+int rightHardSpeed  = 80; // softened to prevent overshoot
+  
 
 // ================= SETUP =================
 void setup() {
