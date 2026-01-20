@@ -1,0 +1,158 @@
+
+// ================= SENSOR SETUP =================
+int AnalogValue[5] = {0, 0, 0, 0, 0};
+int AnalogPin[5]   = {4, 5, 6, 7, 15};
+
+// ================= MOTOR SETUP (CALIBRATED) =================
+int motorLeftPWM    = 37;
+int motorLeftPhase  = 38;
+int motorRightPWM   = 39;
+int motorRightPhase = 20;
+
+// ================= CALIBRATION VALUES =================
+int threshold = 3000;   // from sensor testing
+
+// Motor calibration
+int leftBaseSpeed   = 175;
+int rightBaseSpeed  = 172;
+
+int lightInnerwheel = 165;
+int lightOuterwheel = 172;
+
+int leftTurnSpeed   = 198;
+int rightTurnSpeed  = 190;
+
+int leftHardSpeed   = 185;
+int rightHardSpeed  = 80; // softened to prevent overshoot
+  
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(motorLeftPWM, OUTPUT);
+  pinMode(motorLeftPhase, OUTPUT);
+  pinMode(motorRightPWM, OUTPUT);
+  pinMode(motorRightPhase, OUTPUT);
+
+  stopMotors();
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+
+  bool onLine[5];
+
+  // ===== SENSOR READING =====
+  for (int i = 0; i < 5; i++) {
+    AnalogValue[i] = analogRead(AnalogPin[i]);
+    Serial.print(AnalogValue[i]);
+    Serial.print("\t");
+
+    if (AnalogValue[i] < threshold)
+      onLine[i] = true;   // white line
+    else
+      onLine[i] = false;  // black
+  }
+  Serial.println();
+
+  // ===== LINE FOLLOWING LOGIC (CORRECTED) =====
+// HARD LEFT (far sensor only)
+if (!onLine[2] && onLine[0] && !onLine[4]) {
+  turnHardLeft();
+}
+
+// HARD RIGHT (far sensor only)
+else if (!onLine[2] && onLine[4] && !onLine[0]) {
+  turnHardRight();
+}
+
+// SLIGHT LEFT
+else if (onLine[1] && onLine[2]) {
+  turnslightlyLeft();
+}
+
+// SLIGHT RIGHT
+else if (onLine[2] && onLine[3]) {
+  turnslightlyRight();
+}
+
+// LEFT
+else if (onLine[1]) {
+  turnLeft();
+}
+
+// RIGHT
+else if (onLine[3]) {
+  turnRight();
+}
+
+// STRAIGHT
+else if (onLine[2]) {
+  driveForward();
+}
+
+// LINE LOST
+else {
+  stopMotors();
+}
+
+
+  delay(50);  // stability (Week-3 recommended)
+}
+
+// ================= MOTOR FUNCTIONS =================
+
+void driveForward() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftBaseSpeed);
+  analogWrite(motorRightPWM, rightBaseSpeed);
+}
+
+void turnLeft() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftTurnSpeed);
+  analogWrite(motorRightPWM, rightBaseSpeed);
+}
+
+void turnRight() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftBaseSpeed);
+  analogWrite(motorRightPWM, rightTurnSpeed);
+}
+
+void turnslightlyLeft() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, lightInnerwheel);
+  analogWrite(motorRightPWM, lightOuterwheel);
+}
+
+void turnslightlyRight() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, lightOuterwheel);
+  analogWrite(motorRightPWM, lightInnerwheel);
+}
+
+void turnHardLeft() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, rightHardSpeed);
+  analogWrite(motorRightPWM, leftHardSpeed);
+}
+
+void turnHardRight() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftHardSpeed);
+  analogWrite(motorRightPWM, rightHardSpeed);
+}
+
+void stopMotors() {
+  analogWrite(motorLeftPWM, 0);
+  analogWrite(motorRightPWM, 0);
+}
