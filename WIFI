@@ -1,1 +1,43 @@
+#include <WiFi.h>
 
+// ================= WI-FI DETAILS =================
+// Replace with your exact details
+const char* ssid     = "Jamie's A34";
+const char* password = "Retard101"; 
+
+void setup() {
+  // ESP32 works best at 115200 baud rate
+  Serial.begin(9600); 
+  delay(1000); // Give the serial monitor a moment to start
+
+  connectToWiFi();
+}
+
+void loop() {
+  // Put your main code here (e.g., the robot logic)
+  // For now, it stays empty just to keep the connection alive
+}
+
+// ================= HELPER FUNCTIONS =================
+
+void connectToWiFi() {
+  Serial.println();
+  Serial.print("Connecting to network: ");
+  Serial.println(ssid);
+  
+  WiFi.mode(WIFI_STA); // Station mode (connects to router/phone)
+  WiFi.begin(ssid, password);
+
+  // Wait for connection
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  Serial.println();
+  Serial.println("-----------------------------");
+  Serial.println("WiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+  Serial.println("-----------------------------");
+}
