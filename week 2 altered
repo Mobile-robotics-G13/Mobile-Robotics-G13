@@ -55,46 +55,46 @@ void loop() {
   Serial.println();
 
   // ===== LINE FOLLOWING LOGIC (CORRECTED) =====
+// HARD LEFT (far sensor only)
+if (!onLine[2] && onLine[0] && !onLine[4]) {
+  turnHardLeft();
+}
 
-  // HARD LEFT (centre LOST)
-  if (!onLine[2] && (onLine[0] || onLine[1])) {
-    turnHardLeft();
-  }
+// HARD RIGHT (far sensor only)
+else if (!onLine[2] && onLine[4] && !onLine[0]) {
+  turnHardRight();
+}
 
-  // HARD RIGHT (centre LOST)
-  else if (!onLine[2] && (onLine[3] || onLine[4])) {
-    turnHardRight();
-  }
+// SLIGHT LEFT
+else if (onLine[1] && onLine[2]) {
+  turnslightlyLeft();
+}
 
-  // SLIGHT LEFT (recentre)
-  else if (onLine[1] && onLine[2]) {
-    turnslightlyLeft();
-  }
+// SLIGHT RIGHT
+else if (onLine[2] && onLine[3]) {
+  turnslightlyRight();
+}
 
-  // SLIGHT RIGHT (recentre)
-  else if (onLine[2] && onLine[3]) {
-    turnslightlyRight();
-  }
+// LEFT
+else if (onLine[1]) {
+  turnLeft();
+}
 
-  // LEFT
-  else if (onLine[1]) {
-    turnLeft();
-  }
+// RIGHT
+else if (onLine[3]) {
+  turnRight();
+}
 
-  // RIGHT
-  else if (onLine[3]) {
-    turnRight();
-  }
+// STRAIGHT
+else if (onLine[2]) {
+  driveForward();
+}
 
-  // STRAIGHT
-  else if (onLine[2]) {
-    driveForward();
-  }
+// LINE LOST
+else {
+  stopMotors();
+}
 
-  // LINE LOST
-  else {
-    stopMotors();
-  }
 
   delay(50);  // stability (Week-3 recommended)
 }
