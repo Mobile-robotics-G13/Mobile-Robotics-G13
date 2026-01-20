@@ -3,30 +3,26 @@ int AnalogValue[5] = {0, 0, 0, 0, 0};
 int AnalogPin[5]   = {4, 5, 6, 7, 15};
 
 // ================= MOTOR SETUP (CALIBRATED) =================
-int motorLeftPWM   = 37;
-int motorLeftPhase = 38;
-int motorRightPWM  = 39;
+int motorLeftPWM    = 37;
+int motorLeftPhase  = 38;
+int motorRightPWM   = 39;
 int motorRightPhase = 20;
 
 // ================= CALIBRATION VALUES =================
-int threshold = 2600;   // CHANGE after sensor test
+int threshold = 2600;   // from sensor testing
 
-// Motor calibration 
-
-int leftBaseSpeed  = 180;
-int rightBaseSpeed = 172;
+// Motor calibration
+int leftBaseSpeed   = 180;
+int rightBaseSpeed  = 172;
 
 int lightInnerwheel = 160;
 int lightOuterwheel = 172;
 
-int leftTurnSpeed  = 198;
-int rightTurnSpeed = 190;
+int leftTurnSpeed   = 198;
+int rightTurnSpeed  = 190;
 
-int HardleftturnSpeed = 160;
-int HardrightturnSpeed = 150;
-
-int leftHardSpeed = 190;
-int rightHardSpeed = 60;
+int leftHardSpeed   = 190;
+int rightHardSpeed  = 80;   // softened to prevent overshoot
 
 // ================= SETUP =================
 void setup() {
@@ -36,7 +32,6 @@ void setup() {
   pinMode(motorLeftPhase, OUTPUT);
   pinMode(motorRightPWM, OUTPUT);
   pinMode(motorRightPhase, OUTPUT);
-
 
   stopMotors();
 }
@@ -58,97 +53,51 @@ void loop() {
       onLine[i] = false;  // black
   }
   Serial.println();
-/*
-  // ===== LINE FOLLOWING LOGIC =====
 
-  // STRAIGHT
-  if (onLine[2] && !onLine[0] && !onLine[3] && !onLine[1] && !onLine[4]) {
-    driveForward();
-  }
-  
+  // ===== LINE FOLLOWING LOGIC (CORRECTED) =====
 
-  //  LEFT
-  else if (onLine[1]) {
-    turnLeft();
-  }
-  //slight Left
-  else if (onLine[2] && onLine[1]){
-    turnslightlyLeft();
-  }
-
-  //  RIGHT
-  else if (onLine[3]) {
-    turnRight();
-  }
-//slight right
-  else if (onLine[2] && onLine[3]){
-    turnslightlyRight();
-  }
-  // HARD LEFT
-  else if ((onLine[0] && onLine[1]) || onLine[0]) {
+  // HARD LEFT (centre LOST)
+  if (!onLine[2] && (onLine[0] || onLine[1])) {
     turnHardLeft();
   }
 
-  // HARD RIGHT
-  else if ((onLine[3] && onLine[4]) || onLine[4]) {
+  // HARD RIGHT (centre LOST)
+  else if (!onLine[2] && (onLine[3] || onLine[4])) {
     turnHardRight();
   }
- // else {
- //   stopMotors();
-  //}
-else{
-  linefind();
-}
-  delay(50);  // stability
-}
 
-*/
+  // SLIGHT LEFT (recentre)
+  else if (onLine[1] && onLine[2]) {
+    turnslightlyLeft();
+  }
 
-///////////////////////////////////////////////////////////////////////////
-// ===== LINE FOLLOWING LOGIC (FIXED ORDER) =====
+  // SLIGHT RIGHT (recentre)
+  else if (onLine[2] && onLine[3]) {
+    turnslightlyRight();
+  }
 
-// HARD LEFT
-if (onLine[0] || (onLine[0] && onLine[1])) {
-  turnHardLeft();
-}
+  // LEFT
+  else if (onLine[1]) {
+    turnLeft();
+  }
 
-// HARD RIGHT
-else if (onLine[4] || (onLine[3] && onLine[4])) {
-  turnHardRight();
-}
+  // RIGHT
+  else if (onLine[3]) {
+    turnRight();
+  }
 
-// SLIGHT LEFT
-else if (onLine[1] && onLine[2]) {
-  turnslightlyLeft();
-}
+  // STRAIGHT
+  else if (onLine[2]) {
+    driveForward();
+  }
 
-// SLIGHT RIGHT
-else if (onLine[2] && onLine[3]) {
-  turnslightlyRight();
-}
+  // LINE LOST
+  else {
+    stopMotors();
+  }
 
-// LEFT
-else if (onLine[1]) {
-  turnLeft();
+  delay(50);  // stability (Week-3 recommended)
 }
-
-// RIGHT
-else if (onLine[3]) {
-  turnRight();
-}
-
-// STRAIGHT (allow slight overlap)
-else if (onLine[2]) {
-  driveForward();
-}
-
-// LINE LOST
-else {
-  stopMotors();   // IMPORTANT: don’t drive blind
-}
-  delay(50);  // stability
-}
-///////////////////////////////////////////////////////////////////////////
 
 // ================= MOTOR FUNCTIONS =================
 
@@ -166,6 +115,13 @@ void turnLeft() {
   analogWrite(motorRightPWM, rightBaseSpeed);
 }
 
+void turnRight() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftBaseSpeed);
+  analogWrite(motorRightPWM, rightTurnSpeed);
+}
+
 void turnslightlyLeft() {
   digitalWrite(motorLeftPhase, HIGH);
   digitalWrite(motorRightPhase, HIGH);
@@ -179,18 +135,7 @@ void turnslightlyRight() {
   analogWrite(motorLeftPWM, lightOuterwheel);
   analogWrite(motorRightPWM, lightInnerwheel);
 }
-void turnRight() {
-  digitalWrite(motorLeftPhase, HIGH);
-  digitalWrite(motorRightPhase, HIGH);
-  analogWrite(motorLeftPWM, leftBaseSpeed);
-  analogWrite(motorRightPWM, rightTurnSpeed);
-}
-void turnHardRight() {
-  digitalWrite(motorLeftPhase, HIGH);
-  digitalWrite(motorRightPhase, HIGH);
-  analogWrite(motorLeftPWM, leftHardSpeed);
-  analogWrite(motorRightPWM, rightHardSpeed);
-}
+
 void turnHardLeft() {
   digitalWrite(motorLeftPhase, HIGH);
   digitalWrite(motorRightPhase, HIGH);
@@ -198,14 +143,14 @@ void turnHardLeft() {
   analogWrite(motorRightPWM, leftHardSpeed);
 }
 
+void turnHardRight() {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, leftHardSpeed);
+  analogWrite(motorRightPWM, rightHardSpeed);
+}
+
 void stopMotors() {
   analogWrite(motorLeftPWM, 0);
   analogWrite(motorRightPWM, 0);
-}
-
-void linefind(){
-  digitalWrite(motorLeftPhase, HIGH);
-  digitalWrite(motorRightPhase, HIGH);
-  analogWrite(motorLeftPWM, leftBaseSpeed);
-  analogWrite(motorRightPWM, rightBaseSpeed);
 }
