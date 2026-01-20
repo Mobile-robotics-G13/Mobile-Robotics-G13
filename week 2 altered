@@ -9,7 +9,7 @@ int motorRightPWM   = 39;
 int motorRightPhase = 20;
 
 // ================= CALIBRATION VALUES =================
-int threshold = 2700;   // from sensor testing
+int threshold = 3000;   // from sensor testing
 
 // Motor calibration
 int leftBaseSpeed   = 175;
