@@ -1,0 +1,135 @@
+#include <WiFi.h>
+
+// ================= USER CONFIGURATION =================
+char ssid[]      = "Jamie's A34";
+char password[]  = "Retard101";
+
+// Server Details
+char server[]    = "3.250.38.184";
+int port         = 8000;
+String teamID    = "awsd7752"; // Your Team ID
+
+// Objects
+WiFiClient client;
+#define BUFSIZE 512
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600); // Matches your code settings
+  delay(1000);
+
+  // 1. Connect to WiFi
+  connectToWiFi();
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+  // 2. Connect to Server
+  if (connectToServer()) {
+    
+    // --- SEND MESSAGE ---
+    int position = 0; // Example: Robot is at start
+    String postBody = "position=";
+    postBody += position;
+
+    Serial.println("Sending Data to Server...");
+
+    // Send Request Line (Fixed spaces)
+    client.print("POST /api/arrived/");
+    client.print(teamID);
+    client.println(" HTTP/1.1");
+
+    // Send Headers
+    client.println("Content-Type: application/x-www-form-urlencoded");
+    client.print("Content-Length: ");
+    client.println(postBody.length());
+    client.println(); // Blank line required
+    
+    // Send Body
+    client.println(postBody);
+
+    // --- RECEIVE RESPONSE ---
+    String response = readResponse();
+    Serial.println("Server Replied:");
+    Serial.println(response);
+
+    // Process the Reply
+    int statusCode = getStatusCode(response);
+    if (statusCode == 200) {
+      String body = getResponseBody(response);
+      Serial.print("Target Destination: ");
+      Serial.println(body);
+    } else {
+      Serial.print("Server Error Code: ");
+      Serial.println(statusCode);
+    }
+
+    // STOP here so we don't spam the server
+    Serial.println("Test Complete. Stopping.");
+    while(1); 
+  }
+
+  // If connection failed, wait and try again
+  delay(5000);
+}
+
+// ================= HELPER FUNCTIONS =================
+
+void connectToWiFi() {
+  Serial.print("Connecting to network: ");
+  Serial.print(ssid);
+  
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(300);
+  }
+  
+  Serial.println("\nWiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+bool connectToServer() {
+  Serial.print("Connecting to Server...");
+  if (!client.connect(server, port)) {
+    Serial.println("Failed.");
+    return false;
+  }
+  Serial.println("Success!");
+  return true;
+}
+
+String readResponse() {
+  // Wait up to 5 seconds for data
+  unsigned long timeout = millis();
+  while (client.available() == 0) {
+    if (millis() - timeout > 5000) {
+      return "Timeout: No reply from server";
+    }
+  }
+
+  // Read data
+  char buffer[BUFSIZE];
+  memset(buffer, 0, BUFSIZE);
+  client.readBytes(buffer, BUFSIZE);
+  return String(buffer);
+}
+
+int getStatusCode(String& response) {
+  if (response.length() < 12) return 0;
+  // HTTP/1.1 200 OK -> Indices 9, 10, 11 are the code
+  String code = response.substring(9, 12); 
+  return code.toInt();
+}
+
+String getResponseBody(String& response) {
+  // Body is separated from headers by a double newline
+  int split = response.indexOf("\r\n\r\n");
+  if (split == -1) return "";
+  
+  String body = response.substring(split + 4);
+  body.trim(); // Remove extra whitespace
+  return body;
+}
