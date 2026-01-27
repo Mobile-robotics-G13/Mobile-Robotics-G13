@@ -1,0 +1,292 @@
+#include <WiFi.h>
+
+// ================= USER CONFIGURATION =================
+char ssid[]     = "Jamie's A34";
+char password[] = "Retard101";
+
+// Server Details
+char server[]   = "3.250.38.184";
+int port        = 8000;
+String teamID   = "awsd7752";
+
+// Objects
+WiFiClient client;
+#define BUFSIZE 512
+
+// ================= ROUTE STATE =================
+String currentNode    = "0";
+String targetNode     = "";
+String remainingRoute = ""; // Stores the full string: "3,4,3,5"
+
+// ================= SENSOR SETUP =================
+int AnalogValue[5] = {0, 0, 0, 0, 0};
+int AnalogPin[5]   = {4, 5, 6, 7, 15};
+
+// ================= ULTRASONIC SENSOR SETUP =================
+int trigPin = 48;
+int echoPin = 45;
+int stopDistance = 7;
+int consecutiveDetections = 0;
+int requiredDetections = 2;
+
+// ================= MOTOR SETUP =================
+int motorLeftPWM    = 37;
+int motorLeftPhase  = 38;
+int motorRightPWM   = 39;
+int motorRightPhase = 20;
+
+// ================= CALIBRATION =================
+int threshold = 1500;
+int maxSpeed    = 220;
+int cruiseSpeed = 180;
+int turnSpeed   = 140;
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+  delay(1000);
+
+  pinMode(motorLeftPWM, OUTPUT);
+  pinMode(motorLeftPhase, OUTPUT);
+  pinMode(motorRightPWM, OUTPUT);
+  pinMode(motorRightPhase, OUTPUT);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  stopMotors();
+  connectToWiFi();
+
+  // Announce starting node to server
+  sendPosition(currentNode);
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+  long distance = getDistance();
+
+  if (distance < stopDistance && distance > 0) {
+    consecutiveDetections++;
+    if (consecutiveDetections >= requiredDetections) {
+      stopMotors();
+      delay(300);
+      spinRight(200);
+      delay(200);
+      consecutiveDetections = 0;
+      return;
+    }
+  }
+
+  bool onLine[5];
+  int sensorsActive = 0;
+
+  for (int i = 0; i < 5; i++) {
+    AnalogValue[i] = analogRead(AnalogPin[i]);
+    onLine[i] = (AnalogValue[i] < threshold);
+    if (onLine[i]) sensorsActive++;
+  }
+
+  // INTERSECTION DETECTION
+  if (sensorsActive >= 3) {
+    handleIntersection();   
+  }
+  else if (onLine[2] && !onLine[0] && !onLine[4]) {
+    moveForward(maxSpeed, maxSpeed);
+  }
+  else if (onLine[1]) {
+    moveForward(150, cruiseSpeed);
+  }
+  else if (onLine[3]) {
+    moveForward(cruiseSpeed, 150);
+  }
+  else if (onLine[0]) {
+    spinLeft(turnSpeed);
+  }
+  else if (onLine[4]) {
+    spinRight(turnSpeed);
+  }
+  else {
+    moveForward(250, 250);
+  }
+}
+
+// ================= INTERSECTION HANDLER =================
+void handleIntersection() {
+  stopMotors();
+  
+  // 1. Tell server we arrived at the current spot
+  sendPosition(currentNode);
+
+  // 2. Manage the Route List
+  if (remainingRoute.length() == 0) {
+    // We are out of instructions, ask server for a new route string
+    Serial.println("Route empty. Fetching new route...");
+    remainingRoute = getRouteFromServer();
+  }
+
+  // 3. Extract the very next node from our route string
+  popNextTarget();
+
+  Serial.print("Leaving node: "); Serial.print(currentNode);
+  Serial.print(" -> Moving to target: "); Serial.println(targetNode);
+
+  // 4. Perform the turn based on the map
+  decideTurn(currentNode, targetNode);
+
+  // 5. Update position for the next junction
+  currentNode = targetNode;
+
+  // Move forward slightly to clear the junction sensors
+  unsigned long clearTime = millis();
+  while (millis() - clearTime < 300) {
+    moveForward(200, 200);
+  }
+}
+
+// ================= ROUTE PARSING =================
+// Pulls the first number off the comma list (e.g., "3,4,5" -> target="3", remaining="4,5")
+void popNextTarget() {
+  remainingRoute.trim();
+  if (remainingRoute.length() == 0) {
+    targetNode = currentNode; // Fallback: stay put
+    return;
+  }
+
+  int commaIndex = remainingRoute.indexOf(',');
+  
+  if (commaIndex == -1) {
+    // Only one node left in the list
+    targetNode = remainingRoute;
+    remainingRoute = "";
+  } else {
+    // Extract the first node
+    targetNode = remainingRoute.substring(0, commaIndex);
+    // Keep the rest of the route
+    remainingRoute = remainingRoute.substring(commaIndex + 1);
+  }
+  targetNode.trim();
+}
+
+// ================= ROUTING LOGIC (MAP BASED) =================
+void decideTurn(String from, String to) {
+  if (from == "0" && to == "1") {
+    moveForward(200, 200); delay(300);
+  }
+  else if (from == "0" && to == "4") {
+    spinLeft(200); delay(400);
+  }
+  else if (from == "1" && to == "2") {
+    spinRight(200); delay(400);
+  }
+  else if (from == "2" && to == "3") {
+    moveForward(200, 200); delay(300);
+  }
+  else if (from == "3" && to == "5") {
+    spinLeft(200); delay(400);
+  }
+  else if (from == "4" && to == "5") {
+    spinRight(200); delay(400);
+  }
+}
+
+// ================= SERVER FUNCTIONS =================
+void sendPosition(String position) {
+  if (!connectToServer()) return;
+
+  String postBody = "position=" + position;
+  client.println("POST /api/arrived/" + teamID + " HTTP/1.1");
+  client.println("Host: " + String(server));
+  client.println("Content-Type: application/x-www-form-urlencoded");
+  client.print("Content-Length: ");
+  client.println(postBody.length());
+  client.println("Connection: close");
+  client.println();
+  client.println(postBody);
+
+  readResponse(); // Clear buffer
+  client.stop();
+}
+
+String getRouteFromServer() {
+  if (!connectToServer()) return "";
+
+  client.println("GET /api/getRoute/" + teamID + " HTTP/1.1");
+  client.println("Host: " + String(server));
+  client.println("Connection: close");
+  client.println();
+
+  String response = readResponse();
+  client.stop();
+
+  int split = response.indexOf("\r\n\r\n");
+  if (split == -1) return "";
+
+  String body = response.substring(split + 4);
+  body.trim();
+  Serial.println("New Route Received: " + body);
+  return body;
+}
+
+// ================= HELPERS =================
+void connectToWiFi() {
+  Serial.print("Connecting to network: ");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println("\nWiFi Connected!");
+}
+
+bool connectToServer() {
+  return client.connect(server, port);
+}
+
+String readResponse() {
+  unsigned long timeout = millis();
+  while (client.available() == 0) {
+    if (millis() - timeout > 5000) return "";
+  }
+  String res = "";
+  while(client.available()) {
+    res += (char)client.read();
+  }
+  return res;
+}
+
+long getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  if (duration == 0) return 999;
+  return (duration / 2) * 0.0343;
+}
+
+void moveForward(int left, int right) {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, left);
+  analogWrite(motorRightPWM, right);
+}
+
+void spinLeft(int speed) {
+  digitalWrite(motorLeftPhase, LOW);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, speed);
+  analogWrite(motorRightPWM, speed);
+}
+
+void spinRight(int speed) {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, LOW);
+  analogWrite(motorLeftPWM, speed);
+  analogWrite(motorRightPWM, speed);
+}
+
+void stopMotors() {
+  analogWrite(motorLeftPWM, 0);
+  analogWrite(motorRightPWM, 0);
+}
