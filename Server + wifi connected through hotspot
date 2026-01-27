@@ -1,17 +1,31 @@
 #include <WiFi.h>
 
-// ================= USER CONFIGURATION =================
-char ssid[]      = "Jamie's A34";
-char password[]  = "Retard101";
+// ================= WIFI CONFIG =================
+char ssid[]     = "Jamie's A34";
+char password[] = "Retard101";
 
-// Server Details
-char server[]    = "3.250.38.184";
-int port         = 8000;
-String teamID    = "awsd7752";
+char server[]   = "3.250.38.184";
+int port        = 8000;
+String teamID   = "awsd7752";
 
-// Objects
 WiFiClient client;
 #define BUFSIZE 512
+
+// ================= ROBOT STATES =================
+enum RobotState {
+  FOLLOW_LINE,
+  AT_JUNCTION,
+  TURNING
+};
+
+RobotState state = FOLLOW_LINE;
+
+// ================= ROBOT DATA =================
+int position = 0;          // Current node (0,1,2,3...)
+int targetPosition = 1;    // Example target
+
+bool junctionDetected = false;
+bool turnComplete = false;
 
 // ================= SETUP =================
 void setup() {
@@ -19,68 +33,116 @@ void setup() {
   delay(1000);
 
   connectToWiFi();
+  sendPosition(position);  // Initial position (0)
 }
 
 // ================= MAIN LOOP =================
 void loop() {
 
-  // --- SEND POSITION 0 ---
-  sendPosition(0);
+  readSensors();
+  actuateMotors();
+  updateState();
 
-  Serial.println("Waiting 5 seconds...");
-  delay(5000);
-
-  // --- SEND NEXT POSITION ---
-  sendPosition(1);
-
-  Serial.println("Demo complete.");
-  while (1);  // Stop program
+  delay(50);  // Controller loop timing (from notes)
 }
 
-// ================= FUNCTIONS =================
+// ================= CORE LOGIC =================
 
-void sendPosition(int position) {
+void readSensors() {
+  // ===== REPLACE WITH REAL SENSOR CODE =====
+  // Example logic:
+  // junctionDetected = (leftSensor && rightSensor && centerSensor);
+
+  junctionDetected = false; // default
+
+  // DEBUG SIMULATION (REMOVE LATER)
+  static unsigned long lastTime = 0;
+  if (millis() - lastTime > 5000 && position == 0) {
+    junctionDetected = true;
+    lastTime = millis();
+  }
+}
+
+void actuateMotors() {
+
+  switch (state) {
+
+    case FOLLOW_LINE:
+      Serial.println("Following line...");
+      // followLine();
+      break;
+
+    case AT_JUNCTION:
+      Serial.println("At junction, preparing to turn...");
+      // stopMotors();
+      break;
+
+    case TURNING:
+      Serial.println("Turning...");
+      // turnTowardsTarget();
+      turnComplete = true; // simulate turn complete
+      break;
+  }
+}
+
+void updateState() {
+
+  switch (state) {
+
+    case FOLLOW_LINE:
+      if (junctionDetected) {
+        state = AT_JUNCTION;
+      }
+      break;
+
+    case AT_JUNCTION:
+      state = TURNING;
+      break;
+
+    case TURNING:
+      if (turnComplete) {
+        position = targetPosition;
+        sendPosition(position);
+
+        turnComplete = false;
+        junctionDetected = false;
+        state = FOLLOW_LINE;
+      }
+      break;
+  }
+}
+
+// ================= SERVER COMMUNICATION =================
+
+void sendPosition(int pos) {
 
   if (!connectToServer()) {
-    Serial.println("Server connection failed.");
+    Serial.println("Server connection failed");
     return;
   }
 
-  String postBody = "position=" + String(position);
-
-  Serial.print("Sending position ");
-  Serial.println(position);
+  String body = "position=" + String(pos);
 
   client.print("POST /api/arrived/");
   client.print(teamID);
   client.println(" HTTP/1.1");
-
   client.println("Content-Type: application/x-www-form-urlencoded");
   client.print("Content-Length: ");
-  client.println(postBody.length());
+  client.println(body.length());
   client.println();
-
-  client.println(postBody);
+  client.println(body);
 
   String response = readResponse();
-
-  int statusCode = getStatusCode(response);
-  if (statusCode == 200) {
-    String body = getResponseBody(response);
-    Serial.print("Server response: ");
-    Serial.println(body);
-  } else {
-    Serial.print("Server error: ");
-    Serial.println(statusCode);
-  }
+  Serial.println("Server reply:");
+  Serial.println(response);
 
   client.stop();
 }
 
-void connectToWiFi() {
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+// ================= WIFI HELPERS =================
 
+void connectToWiFi() {
+  Serial.print("Connecting to WiFi");
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -93,38 +155,17 @@ void connectToWiFi() {
 }
 
 bool connectToServer() {
-  Serial.print("Connecting to server...");
-  if (!client.connect(server, port)) {
-    Serial.println("Failed");
-    return false;
-  }
-  Serial.println("Connected");
-  return true;
+  return client.connect(server, port);
 }
 
 String readResponse() {
   unsigned long timeout = millis();
-  while (client.available() == 0) {
-    if (millis() - timeout > 5000) {
-      return "Timeout";
-    }
+  while (!client.available()) {
+    if (millis() - timeout > 5000) return "Timeout";
   }
 
   char buffer[BUFSIZE];
   memset(buffer, 0, BUFSIZE);
   client.readBytes(buffer, BUFSIZE);
   return String(buffer);
-}
-
-int getStatusCode(String& response) {
-  if (response.length() < 12) return 0;
-  return response.substring(9, 12).toInt();
-}
-
-String getResponseBody(String& response) {
-  int split = response.indexOf("\r\n\r\n");
-  if (split == -1) return "";
-  String body = response.substring(split + 4);
-  body.trim();
-  return body;
 }
