@@ -30,30 +30,30 @@ int graph[V][V] = {
   { 0, 2, 0, 3, 3, 2, 0, 0 }  // Node 7 (Left Junc)
 };
 
-// ================= NODE POSITION & DIRECTION MAPPING =================
-// Physical coordinates (arbitrary units based on circuit layout)
+// ================= NODE POSITION MAPPING =================
+// Using a coordinate system based on the circuit image
+// X-axis: left to right, Y-axis: bottom to top
 struct NodePosition {
   float x;
   float y;
 };
 
 NodePosition nodePos[V] = {
-  {4.0, 2.0},  // Node 0 - bottom right
-  {6.0, 4.0},  // Node 1 - right middle
-  {4.0, 5.0},  // Node 2 - top middle-right
-  {2.0, 5.0},  // Node 3 - top left
-  {2.0, 2.0},  // Node 4 - bottom left
-  {0.0, 4.0},  // Node 5 - left exit
-  {6.0, 3.0},  // Node 6 - right junction
-  {3.5, 3.5}   // Node 7 - center junction
+  {5.0, 1.0},  // Node 0 - bottom right area
+  {7.0, 3.0},  // Node 1 - right side, mid-upper
+  {4.5, 5.0},  // Node 2 - top middle-right
+  {2.5, 5.0},  // Node 3 - top left
+  {2.5, 1.0},  // Node 4 - bottom left
+  {0.0, 3.0},  // Node 5 - left exit
+  {8.0, 3.0},  // Node 6 - right junction/exit
+  {3.5, 3.0}   // Node 7 - center junction
 };
 
 // ================= ROUTE STATE (MEMORY) =================
-String previousNode   = "-1"; 
-String currentNode    = "0"; 
-String targetNode     = "";
-String remainingRoute = ""; 
-float currentHeading  = 0.0;  // Robot's current heading in degrees (0=East, 90=North, 180=West, 270=South)
+String previousNode   = "6";    // We came from Node 6
+String currentNode    = "0";    // We are at Node 0
+String targetNode     = "4";    // We are heading to Node 4
+String remainingRoute = "";     // Will be populated by server
 
 // ================= SENSOR SETUP =================
 int AnalogValue[5] = {0, 0, 0, 0, 0};
@@ -86,7 +86,8 @@ void spinRight(int speed);
 void spinLeft(int speed);
 void performTurn(float targetAngle);
 void handleIntersection();
-float calculateRequiredTurn(int fromNode, int toNode);
+float calculateTurnAngle(int fromNode, int currentNode, int toNode);
+float getAngleBetweenNodes(int fromNode, int toNode);
 float normalizeAngle(float angle);
 void connectToWiFi();
 void sendPosition(String position);
@@ -118,13 +119,24 @@ void setup() {
   stopMotors();
   connectToWiFi();
 
-  // Reset Memory to Start Conditions
-  previousNode = "-1";
-  currentNode = "0"; 
-  currentHeading = 0.0; // Starting facing East
+  // ===== EXPLICIT INITIAL STATE =====
+  // Robot is physically at Node 0
+  // It came from Node 6 (behind it)
+  // It should be facing toward Node 4 (in front)
+  previousNode = "6";       // Last node = Node 6
+  currentNode = "0";        // Current position = Node 0
+  targetNode = "4";         // Next destination = Node 4
+  remainingRoute = "";      // Empty, will fetch from server
+  
   sendPosition(currentNode);
   
-  Serial.println("SYSTEM READY.");
+  Serial.println("\n===== INITIAL CONFIGURATION =====");
+  Serial.println("  Position: Node 0");
+  Serial.println("  Came from: Node 6 (behind)");
+  Serial.println("  Facing toward: Node 4 (front)");
+  Serial.println("  Robot orientation: Facing LEFT on circuit");
+  Serial.println("===================================");
+  Serial.println("SYSTEM READY.\n");
 }
 
 // ================= MAIN LOOP =================
@@ -184,88 +196,123 @@ void loop() {
 
 // ================= INTERSECTION HANDLER =================
 void handleIntersection() {
-  Serial.print("\n--- NODE UPDATE ---");
-  Serial.print(" Was: "); Serial.print(previousNode);
-  Serial.print(" | Now At: "); Serial.println(currentNode);
+  Serial.print("\n========================================");
+  Serial.print("\n   INTERSECTION AT NODE "); Serial.println(currentNode);
+  Serial.print("   Came from: Node "); Serial.println(previousNode);
+  Serial.println("========================================");
   
   sendPosition(currentNode);
 
   // 1. Get New Route if Empty
-  if (remainingRoute.length() == 0) {
+  if (remainingRoute.length() == 0 && targetNode == currentNode) {
     stopMotors(); 
-    Serial.println("Fetching route...");
+    Serial.println("\nFetching new route from server...");
     String serverResponse = getRouteFromServer();
     
     if (serverResponse.length() > 0) {
        remainingRoute = buildPathFromWaypoints(serverResponse);
-       Serial.print("Path: "); Serial.println(remainingRoute);
+       Serial.print("Server waypoints converted to path: ");
+       Serial.println(remainingRoute);
+       
+       // Get first target from new route
+       popNextTarget();
+    } else {
+      Serial.println("No route received from server!");
+      return;
     }
   }
+  // If we still have route but need next target
+  else if (targetNode == currentNode && remainingRoute.length() > 0) {
+    popNextTarget();
+  }
 
-  // 2. Extract Next Target
-  popNextTarget();
-
-  // 3. Skip Redundant Nodes
+  // Skip any redundant nodes
   while (targetNode == currentNode && remainingRoute.length() > 0) {
+      Serial.print("Skipping redundant node: "); Serial.println(targetNode);
       popNextTarget();
   }
 
-  // If nowhere to go, stop.
+  // If nowhere to go, stop
   if (targetNode == currentNode || targetNode == "") {
       stopMotors();
-      Serial.println("Route Complete.");
+      Serial.println("========================================");
+      Serial.println("      ROUTE COMPLETE - STOPPING");
+      Serial.println("========================================\n");
       return; 
   }
 
-  Serial.print("Next Target: "); Serial.println(targetNode);
+  Serial.print("\n>> Next Target: Node "); Serial.println(targetNode);
 
-  // 4. CALCULATE REQUIRED TURN ANGLE
-  float requiredTurn = calculateRequiredTurn(currentNode.toInt(), targetNode.toInt());
+  // 4. CALCULATE TURN ANGLE
+  int fromNodeInt = previousNode.toInt();
+  int currentNodeInt = currentNode.toInt();
+  int targetNodeInt = targetNode.toInt();
   
-  Serial.print("Current Heading: "); Serial.print(currentHeading);
-  Serial.print("° | Required Turn: "); Serial.print(requiredTurn); Serial.println("°");
+  float turnAngle = calculateTurnAngle(fromNodeInt, currentNodeInt, targetNodeInt);
+  
+  Serial.print(">> Turn calculation: "); Serial.print(turnAngle); Serial.println("°");
 
-  // 5. CHECK IF STRAIGHT (within tolerance)
-  if (abs(requiredTurn) < 15) {  // 15 degree tolerance for "straight"
-      Serial.println(">>> GOING STRAIGHT THROUGH");
+  // 5. EXECUTE TURN OR GO STRAIGHT
+  if (abs(turnAngle) < 20) {  // Tolerance for "straight"
+      Serial.println(">> Action: CONTINUE STRAIGHT\n");
       moveForward(maxSpeed, maxSpeed); 
       delay(150); 
   } else {
-      // 6. EXECUTE DYNAMIC TURN
-      performTurn(requiredTurn);
+      performTurn(turnAngle);
   }
 
-  // 7. Update Memory and Heading
+  // 6. UPDATE TRACKING VARIABLES
+  // The node we're AT becomes where we CAME FROM
+  // The node we're GOING TO becomes where we ARE
   previousNode = currentNode;
   currentNode = targetNode;
-  // Heading is updated in performTurn()
+  
+  Serial.print(">> Updated state - Now at: Node "); Serial.print(currentNode);
+  Serial.print(" | Came from: Node "); Serial.println(previousNode);
+  Serial.println("========================================\n");
 }
 
-// ================= DYNAMIC TURN CALCULATION =================
-float calculateRequiredTurn(int fromNode, int toNode) {
-  // If this is the first move (no previous direction)
-  if (previousNode == "-1") {
-    // Calculate initial heading from start position
-    float dx = nodePos[toNode].x - nodePos[fromNode].x;
-    float dy = nodePos[toNode].y - nodePos[fromNode].y;
-    float targetHeading = atan2(dy, dx) * 180.0 / PI;
-    return normalizeAngle(targetHeading - currentHeading);
-  }
+// ================= TURN ANGLE CALCULATION =================
+// Calculate the turn angle needed at an intersection
+// fromNode: the node we came from (our entry direction)
+// currentNode: where we are now (the intersection)
+// toNode: where we want to go (our exit direction)
+float calculateTurnAngle(int fromNode, int currentNode, int toNode) {
+  // Get the angle of our current heading (direction we're traveling)
+  float currentHeading = getAngleBetweenNodes(fromNode, currentNode);
   
-  // Calculate the direction vector from current to target
-  float dx = nodePos[toNode].x - nodePos[fromNode].x;
-  float dy = nodePos[toNode].y - nodePos[fromNode].y;
+  // Get the angle we need to be facing (direction to target)
+  float targetHeading = getAngleBetweenNodes(currentNode, toNode);
   
-  // Calculate the absolute heading to target (0° = East, 90° = North)
-  float targetHeading = atan2(dy, dx) * 180.0 / PI;
-  
-  // Calculate the turn needed from current heading
+  // Calculate the difference
   float turnAngle = normalizeAngle(targetHeading - currentHeading);
+  
+  Serial.print("   Heading from Node "); Serial.print(fromNode);
+  Serial.print(" -> "); Serial.print(currentNode);
+  Serial.print(" = "); Serial.print(currentHeading); Serial.println("°");
+  
+  Serial.print("   Need to face Node "); Serial.print(currentNode);
+  Serial.print(" -> "); Serial.print(toNode);
+  Serial.print(" = "); Serial.print(targetHeading); Serial.println("°");
   
   return turnAngle;
 }
 
+// Calculate the angle between two nodes (returns 0-360°)
+// 0° = East (right), 90° = North (up), 180° = West (left), 270° = South (down)
+float getAngleBetweenNodes(int fromNode, int toNode) {
+  float dx = nodePos[toNode].x - nodePos[fromNode].x;
+  float dy = nodePos[toNode].y - nodePos[fromNode].y;
+  
+  // atan2 returns -π to π, convert to 0-360°
+  float angle = atan2(dy, dx) * 180.0 / PI;
+  if (angle < 0) angle += 360;
+  
+  return angle;
+}
+
 // Normalize angle to -180 to +180 range
+// Positive = turn left, Negative = turn right
 float normalizeAngle(float angle) {
   while (angle > 180) angle -= 360;
   while (angle < -180) angle += 360;
@@ -273,29 +320,27 @@ float normalizeAngle(float angle) {
 }
 
 // ================= DYNAMIC TURN EXECUTION =================
-void performTurn(float targetAngle) {
+void performTurn(float turnAngle) {
   stopMotors();
   delay(300);
   
   // Determine turn type and direction
-  bool isLeftTurn = (targetAngle > 0);
-  float absAngle = abs(targetAngle);
+  bool isLeftTurn = (turnAngle > 0);
+  float absAngle = abs(turnAngle);
   
-  Serial.print("Executing ");
-  Serial.print(isLeftTurn ? "LEFT" : "RIGHT");
-  Serial.print(" turn of ");
-  Serial.print(absAngle);
-  Serial.println("°");
+  Serial.print(">> Executing: ");
   
-  // For 180° turns (U-turn)
+  // For ~180° turns (U-turn)
   if (absAngle > 135) {
-    Serial.println("Action: 180° Turn");
+    Serial.print("180° U-TURN (");
+    Serial.print(isLeftTurn ? "LEFT" : "RIGHT");
+    Serial.println(")");
     
     // Reverse slightly
     motorReverse(150);
     delay(300);
     
-    // Spin in the shorter direction
+    // Spin in the appropriate direction
     if (isLeftTurn) {
       spinLeft(junctionSpinSpeed);
     } else {
@@ -306,7 +351,7 @@ void performTurn(float targetAngle) {
     // Wait for line detection
     int sensorsActive = 0;
     int turnAttempts = 0;
-    int maxAttempts = 50;
+    int maxAttempts = 60;
     
     while (sensorsActive < 1 && turnAttempts < maxAttempts) {
       if (isLeftTurn) {
@@ -324,15 +369,17 @@ void performTurn(float targetAngle) {
       delay(40);
     }
     
-    currentHeading = normalizeAngle(currentHeading + 180);
+    Serial.println("   U-turn complete!");
   }
-  // For 90° turns
+  // For ~90° turns
   else if (absAngle > 45) {
-    Serial.println("Action: 90° Turn");
+    Serial.print("90° ");
+    Serial.print(isLeftTurn ? "LEFT" : "RIGHT");
+    Serial.println(" TURN");
     
     // Move forward slightly to clear intersection
     moveForward(200, 200);
-    delay(100);
+    delay(150);
     
     // Spin
     if (isLeftTurn) {
@@ -345,7 +392,7 @@ void performTurn(float targetAngle) {
     // Wait for line detection
     int sensorsActive = 0;
     int turnAttempts = 0;
-    int maxAttempts = 50;
+    int maxAttempts = 60;
     
     while (sensorsActive < 1 && turnAttempts < maxAttempts) {
       if (isLeftTurn) {
@@ -363,20 +410,17 @@ void performTurn(float targetAngle) {
       delay(40);
     }
     
-    currentHeading = normalizeAngle(currentHeading + targetAngle);
+    Serial.println("   90° turn complete!");
   }
-  // For slight adjustments (< 45°)
+  // For slight adjustments
   else {
-    Serial.println("Action: Slight adjustment");
+    Serial.println("SLIGHT ADJUSTMENT");
     moveForward(200, 200);
-    delay(150);
-    currentHeading = normalizeAngle(currentHeading + targetAngle);
+    delay(100);
   }
   
   stopMotors();
   delay(300);
-  
-  Serial.print("New Heading: "); Serial.print(currentHeading); Serial.println("°");
 }
 
 // ================= WIFI & SERVER =================
