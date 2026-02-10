@@ -1,0 +1,537 @@
+#include <WiFi.h>
+#include <vector>
+
+// ================= USER CONFIGURATION =================
+char ssid[]     = "Jamie's A34"; 
+char password[] = "Retard101";
+
+// Server Details
+char server[]   = "3.250.38.184";
+int port        = 8000;
+String teamID   = "awsd7752";
+
+// Objects
+WiFiClient client;
+#define BUFSIZE 512
+
+// ================= GRAPH MAPPING (DIJKSTRA) =================
+const int V = 8; // Nodes 0-7
+#define INF 999
+
+int graph[V][V] = {
+  // 0, 1, 2, 3, 4, 5, 6, 7
+  { 0, 0, 0, 0, 5, 0, 2, 0 }, // Node 0
+  { 0, 0, 0, 0, 0, 0, 2, 2 }, // Node 1
+  { 0, 0, 0, 2, 0, 0, 2, 0 }, // Node 2
+  { 0, 0, 2, 0, 0, 0, 0, 5 }, // Node 3
+  { 1, 0, 0, 0, 0, 0, 0, 3 }, // Node 4
+  { 0, 0, 0, 0, 0, 0, 0, 2 }, // Node 5 (Finish)
+  { 2, 2, 2, 0, 0, 0, 0, 0 }, // Node 6 (Right Junc)
+  { 0, 2, 0, 3, 3, 2, 0, 0 }  // Node 7 (Left Junc)
+};
+
+// ================= NODE POSITION & DIRECTION MAPPING =================
+// Physical coordinates (arbitrary units based on circuit layout)
+struct NodePosition {
+  float x;
+  float y;
+};
+
+NodePosition nodePos[V] = {
+  {4.0, 2.0},  // Node 0 - bottom right
+  {6.0, 4.0},  // Node 1 - right middle
+  {4.0, 5.0},  // Node 2 - top middle-right
+  {2.0, 5.0},  // Node 3 - top left
+  {2.0, 2.0},  // Node 4 - bottom left
+  {0.0, 4.0},  // Node 5 - left exit
+  {6.0, 3.0},  // Node 6 - right junction
+  {3.5, 3.5}   // Node 7 - center junction
+};
+
+// ================= ROUTE STATE (MEMORY) =================
+String previousNode   = "-1"; 
+String currentNode    = "0"; 
+String targetNode     = "";
+String remainingRoute = ""; 
+float currentHeading  = 0.0;  // Robot's current heading in degrees (0=East, 90=North, 180=West, 270=South)
+
+// ================= SENSOR SETUP =================
+int AnalogValue[5] = {0, 0, 0, 0, 0};
+int AnalogPin[5]   = {4, 5, 6, 7, 15};
+int threshold = 1500;
+
+// ================= ULTRASONIC SENSOR SETUP =================
+int trigPin = 48;
+int echoPin = 45;
+int stopDistance = 7;
+int consecutiveDetections = 0;
+int requiredDetections = 2;
+
+// ================= MOTOR SETUP =================
+int motorLeftPWM    = 37;
+int motorLeftPhase  = 38;
+int motorRightPWM   = 39;
+int motorRightPhase = 20;
+
+// ================= SPEED SETTINGS =================
+int maxSpeed        = 255;
+int cruiseSpeed     = 220;
+int junctionSpinSpeed = 200; 
+
+// ================= FUNCTION PROTOTYPES =================
+void stopMotors();
+void moveForward(int left, int right);
+void motorReverse(int speed);
+void spinRight(int speed);
+void spinLeft(int speed);
+void performTurn(float targetAngle);
+void handleIntersection();
+float calculateRequiredTurn(int fromNode, int toNode);
+float normalizeAngle(float angle);
+void connectToWiFi();
+void sendPosition(String position);
+String getRouteFromServer();
+String calculateDijkstraPath(int startNode, int endNode);
+String buildPathFromWaypoints(String waypoints);
+void popNextTarget();
+long getDistance();
+bool connectToServer();
+String readResponse();
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600); 
+  delay(2000); 
+
+  Serial.println("\n\n=== ROBOT BOOTING UP ===");
+
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+
+  pinMode(motorLeftPWM, OUTPUT);
+  pinMode(motorLeftPhase, OUTPUT);
+  pinMode(motorRightPWM, OUTPUT);
+  pinMode(motorRightPhase, OUTPUT);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  stopMotors();
+  connectToWiFi();
+
+  // Reset Memory to Start Conditions
+  previousNode = "-1";
+  currentNode = "0"; 
+  currentHeading = 0.0; // Starting facing East
+  sendPosition(currentNode);
+  
+  Serial.println("SYSTEM READY.");
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+  long distance = getDistance();
+
+  // Obstacle Handling
+  if (distance < stopDistance && distance > 0) {
+    consecutiveDetections++;
+    if (consecutiveDetections >= requiredDetections) {
+      stopMotors();
+      Serial.println("Obstacle! Waiting...");
+      delay(300);
+      consecutiveDetections = 0;
+      return;
+    }
+  } else {
+    consecutiveDetections = 0;
+  }
+
+  // Line Sensor Reading
+  bool onLine[5];
+  int sensorsActive = 0;
+
+  for (int i = 0; i < 5; i++) {
+    AnalogValue[i] = analogRead(AnalogPin[i]);
+    onLine[i] = (AnalogValue[i] < threshold);
+    if (onLine[i]) sensorsActive++;
+  }
+
+  // INTERSECTION DETECTION
+  if (sensorsActive >= 3) {
+    stopMotors();
+    delay(100); 
+    handleIntersection();   
+  }
+  // ===== LINE FOLLOWING LOGIC =====
+  else if (onLine[2] && !onLine[0] && !onLine[4]) {
+    moveForward(maxSpeed, maxSpeed);
+  }
+  else if (onLine[1]) {
+    moveForward(120, cruiseSpeed);
+  }
+  else if (onLine[3]) {
+    moveForward(cruiseSpeed, 120);
+  }
+  else if (onLine[0]) {
+    moveForward(40, 180); 
+  }
+  else if (onLine[4]) {
+    moveForward(180, 40); 
+  }
+  else {
+    moveForward(cruiseSpeed, cruiseSpeed);
+  }
+}
+
+// ================= INTERSECTION HANDLER =================
+void handleIntersection() {
+  Serial.print("\n--- NODE UPDATE ---");
+  Serial.print(" Was: "); Serial.print(previousNode);
+  Serial.print(" | Now At: "); Serial.println(currentNode);
+  
+  sendPosition(currentNode);
+
+  // 1. Get New Route if Empty
+  if (remainingRoute.length() == 0) {
+    stopMotors(); 
+    Serial.println("Fetching route...");
+    String serverResponse = getRouteFromServer();
+    
+    if (serverResponse.length() > 0) {
+       remainingRoute = buildPathFromWaypoints(serverResponse);
+       Serial.print("Path: "); Serial.println(remainingRoute);
+    }
+  }
+
+  // 2. Extract Next Target
+  popNextTarget();
+
+  // 3. Skip Redundant Nodes
+  while (targetNode == currentNode && remainingRoute.length() > 0) {
+      popNextTarget();
+  }
+
+  // If nowhere to go, stop.
+  if (targetNode == currentNode || targetNode == "") {
+      stopMotors();
+      Serial.println("Route Complete.");
+      return; 
+  }
+
+  Serial.print("Next Target: "); Serial.println(targetNode);
+
+  // 4. CALCULATE REQUIRED TURN ANGLE
+  float requiredTurn = calculateRequiredTurn(currentNode.toInt(), targetNode.toInt());
+  
+  Serial.print("Current Heading: "); Serial.print(currentHeading);
+  Serial.print("° | Required Turn: "); Serial.print(requiredTurn); Serial.println("°");
+
+  // 5. CHECK IF STRAIGHT (within tolerance)
+  if (abs(requiredTurn) < 15) {  // 15 degree tolerance for "straight"
+      Serial.println(">>> GOING STRAIGHT THROUGH");
+      moveForward(maxSpeed, maxSpeed); 
+      delay(150); 
+  } else {
+      // 6. EXECUTE DYNAMIC TURN
+      performTurn(requiredTurn);
+  }
+
+  // 7. Update Memory and Heading
+  previousNode = currentNode;
+  currentNode = targetNode;
+  // Heading is updated in performTurn()
+}
+
+// ================= DYNAMIC TURN CALCULATION =================
+float calculateRequiredTurn(int fromNode, int toNode) {
+  // If this is the first move (no previous direction)
+  if (previousNode == "-1") {
+    // Calculate initial heading from start position
+    float dx = nodePos[toNode].x - nodePos[fromNode].x;
+    float dy = nodePos[toNode].y - nodePos[fromNode].y;
+    float targetHeading = atan2(dy, dx) * 180.0 / PI;
+    return normalizeAngle(targetHeading - currentHeading);
+  }
+  
+  // Calculate the direction vector from current to target
+  float dx = nodePos[toNode].x - nodePos[fromNode].x;
+  float dy = nodePos[toNode].y - nodePos[fromNode].y;
+  
+  // Calculate the absolute heading to target (0° = East, 90° = North)
+  float targetHeading = atan2(dy, dx) * 180.0 / PI;
+  
+  // Calculate the turn needed from current heading
+  float turnAngle = normalizeAngle(targetHeading - currentHeading);
+  
+  return turnAngle;
+}
+
+// Normalize angle to -180 to +180 range
+float normalizeAngle(float angle) {
+  while (angle > 180) angle -= 360;
+  while (angle < -180) angle += 360;
+  return angle;
+}
+
+// ================= DYNAMIC TURN EXECUTION =================
+void performTurn(float targetAngle) {
+  stopMotors();
+  delay(300);
+  
+  // Determine turn type and direction
+  bool isLeftTurn = (targetAngle > 0);
+  float absAngle = abs(targetAngle);
+  
+  Serial.print("Executing ");
+  Serial.print(isLeftTurn ? "LEFT" : "RIGHT");
+  Serial.print(" turn of ");
+  Serial.print(absAngle);
+  Serial.println("°");
+  
+  // For 180° turns (U-turn)
+  if (absAngle > 135) {
+    Serial.println("Action: 180° Turn");
+    
+    // Reverse slightly
+    motorReverse(150);
+    delay(300);
+    
+    // Spin in the shorter direction
+    if (isLeftTurn) {
+      spinLeft(junctionSpinSpeed);
+    } else {
+      spinRight(junctionSpinSpeed);
+    }
+    delay(700);
+    
+    // Wait for line detection
+    int sensorsActive = 0;
+    int turnAttempts = 0;
+    int maxAttempts = 50;
+    
+    while (sensorsActive < 1 && turnAttempts < maxAttempts) {
+      if (isLeftTurn) {
+        spinLeft(junctionSpinSpeed);
+      } else {
+        spinRight(junctionSpinSpeed);
+      }
+      
+      sensorsActive = 0;
+      for (int i = 0; i < 5; i++) {
+        if (analogRead(AnalogPin[i]) < threshold) sensorsActive++;
+      }
+      
+      turnAttempts++;
+      delay(40);
+    }
+    
+    currentHeading = normalizeAngle(currentHeading + 180);
+  }
+  // For 90° turns
+  else if (absAngle > 45) {
+    Serial.println("Action: 90° Turn");
+    
+    // Move forward slightly to clear intersection
+    moveForward(200, 200);
+    delay(100);
+    
+    // Spin
+    if (isLeftTurn) {
+      spinLeft(junctionSpinSpeed);
+    } else {
+      spinRight(junctionSpinSpeed);
+    }
+    delay(400);
+    
+    // Wait for line detection
+    int sensorsActive = 0;
+    int turnAttempts = 0;
+    int maxAttempts = 50;
+    
+    while (sensorsActive < 1 && turnAttempts < maxAttempts) {
+      if (isLeftTurn) {
+        spinLeft(junctionSpinSpeed);
+      } else {
+        spinRight(junctionSpinSpeed);
+      }
+      
+      sensorsActive = 0;
+      for (int i = 0; i < 5; i++) {
+        if (analogRead(AnalogPin[i]) < threshold) sensorsActive++;
+      }
+      
+      turnAttempts++;
+      delay(40);
+    }
+    
+    currentHeading = normalizeAngle(currentHeading + targetAngle);
+  }
+  // For slight adjustments (< 45°)
+  else {
+    Serial.println("Action: Slight adjustment");
+    moveForward(200, 200);
+    delay(150);
+    currentHeading = normalizeAngle(currentHeading + targetAngle);
+  }
+  
+  stopMotors();
+  delay(300);
+  
+  Serial.print("New Heading: "); Serial.print(currentHeading); Serial.println("°");
+}
+
+// ================= WIFI & SERVER =================
+void connectToWiFi() {
+  if(WiFi.status() == WL_CONNECTED) return;
+  Serial.print("Connecting to network: ");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { Serial.print("."); delay(300); }
+  Serial.println("\nWiFi Connected!");
+}
+
+void sendPosition(String position) {
+  if (!connectToServer()) return;
+  String postBody = "position=" + position;
+  client.println("POST /api/arrived/" + teamID + " HTTP/1.1");
+  client.println("Host: " + String(server));
+  client.println("Content-Type: application/x-www-form-urlencoded");
+  client.print("Content-Length: "); client.println(postBody.length());
+  client.println("Connection: close");
+  client.println();
+  client.println(postBody);
+  readResponse(); 
+  client.stop();
+}
+
+String getRouteFromServer() {
+  if (!connectToServer()) return "";
+  client.println("GET /api/getRoute/" + teamID + " HTTP/1.1");
+  client.println("Host: " + String(server));
+  client.println("Connection: close");
+  client.println();
+  String response = readResponse();
+  client.stop();
+  int split = response.indexOf("\r\n\r\n");
+  if (split == -1) return "";
+  String body = response.substring(split + 4);
+  body.trim();
+  return body;
+}
+
+bool connectToServer() { 
+  if (client.connect(server, port)) {
+    return true;
+  }
+  Serial.println("Server Connection FAILED!");
+  return false;
+}
+
+String readResponse() {
+  unsigned long timeout = millis();
+  while (client.available() == 0) { if (millis() - timeout > 3000) return ""; }
+  String res = "";
+  while(client.available()) { res += (char)client.read(); }
+  return res;
+}
+
+// ================= ROUTE BUILDER (DIJKSTRA HELPERS) =================
+String buildPathFromWaypoints(String waypoints) {
+    String fullPath = "";
+    int currentSearchNode = currentNode.toInt();
+    waypoints.trim();
+    
+    while (waypoints.length() > 0) {
+        int commaIndex = waypoints.indexOf(',');
+        String checkpointStr;
+        if (commaIndex == -1) { 
+            checkpointStr = waypoints; 
+            waypoints = ""; 
+        } else { 
+            checkpointStr = waypoints.substring(0, commaIndex); 
+            waypoints = waypoints.substring(commaIndex + 1); 
+        }
+        checkpointStr.trim();
+        int nextCheckpoint = checkpointStr.toInt();
+
+        if (nextCheckpoint == currentSearchNode) {
+            continue; 
+        }
+
+        String segment = calculateDijkstraPath(currentSearchNode, nextCheckpoint);
+        if (segment.length() > 0) {
+            if (fullPath.length() > 0) fullPath += ",";
+            fullPath += segment;
+        }
+        currentSearchNode = nextCheckpoint;
+    }
+    return fullPath;
+}
+
+String calculateDijkstraPath(int startNode, int endNode) {
+    if (startNode == endNode) return "";
+    int dist[V], parent[V]; bool sptSet[V];
+    for (int i = 0; i < V; i++) { dist[i] = INF; sptSet[i] = false; parent[i] = -1; }
+    dist[startNode] = 0;
+    
+    for (int count = 0; count < V - 1; count++) {
+        int u = -1;
+        for (int i = 0; i < V; i++) if (!sptSet[i] && (u == -1 || dist[i] < dist[u])) u = i;
+        if (dist[u] == INF) break;
+        sptSet[u] = true;
+        
+        for (int v = 0; v < V; v++) {
+            if (!sptSet[v] && graph[u][v] && dist[u] != INF && dist[u] + graph[u][v] < dist[v]) {
+                dist[v] = dist[u] + graph[u][v];
+                parent[v] = u;
+            }
+        }
+    }
+    String path = ""; int curr = endNode;
+    while (curr != -1) {
+        if (curr == startNode) break; 
+        if (path == "") path = String(curr); else path = String(curr) + "," + path;
+        curr = parent[curr];
+    }
+    return path;
+}
+
+void popNextTarget() {
+  remainingRoute.trim();
+  if (remainingRoute.length() == 0) { targetNode = currentNode; return; }
+  int commaIndex = remainingRoute.indexOf(',');
+  if (commaIndex == -1) { targetNode = remainingRoute; remainingRoute = ""; } 
+  else { targetNode = remainingRoute.substring(0, commaIndex); remainingRoute = remainingRoute.substring(commaIndex + 1); }
+  targetNode.trim();
+}
+
+// ================= HARDWARE DRIVERS =================
+long getDistance() {
+  digitalWrite(trigPin, LOW); delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH); delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 20000);
+  return (duration == 0) ? 999 : (duration / 2) * 0.0343;
+}
+
+void moveForward(int left, int right) {
+  digitalWrite(motorLeftPhase, HIGH); digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, left); analogWrite(motorRightPWM, right);
+}
+
+void motorReverse(int speed) {
+  digitalWrite(motorLeftPhase, LOW); digitalWrite(motorRightPhase, LOW);
+  analogWrite(motorLeftPWM, speed); analogWrite(motorRightPWM, speed);
+}
+
+void spinLeft(int speed) {
+  digitalWrite(motorLeftPhase, LOW); digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, speed); analogWrite(motorRightPWM, speed);
+}
+
+void spinRight(int speed) {
+  digitalWrite(motorLeftPhase, HIGH); digitalWrite(motorRightPhase, LOW);
+  analogWrite(motorLeftPWM, speed); analogWrite(motorRightPWM, speed);
+}
+
+void stopMotors() {
+  analogWrite(motorLeftPWM, 0); analogWrite(motorRightPWM, 0);
+}
