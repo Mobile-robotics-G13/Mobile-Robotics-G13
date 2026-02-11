@@ -1,0 +1,638 @@
+
+#include <WiFi.h>
+
+// ================= USER CONFIGURATION =================
+char ssid[] = "Jamie's A34";
+char password[] = "Retard101";
+
+// Server Details
+char server[] = "3.250.38.184";
+int port = 8000;
+String teamID = "awsd7752";
+
+// Objects
+WiFiClient client;
+#define BUFSIZE 512
+
+// ================= GRAPH MAPPING (DIJKSTRA) =================
+const int V = 8; // Nodes 0-7
+#define INF 999
+
+int graph[V][V] = {
+  // 0,  1,  2,  3,  4,  5,  6,  7
+  {  0,  0,  0,  0,  5,  0,  2,  0 }, // Node 0
+  {  0,  0,  0,  0,  0,  0,  2,  2 }, // Node 1
+  {  0,  0,  0,  2,  0,  0,  2,  0 }, // Node 2
+  {  0,  0,  2,  0,  0,  0,  0,  5 }, // Node 3
+  {  1,  0,  0,  0,  0,  0,  0,  3 }, // Node 4
+  {  0,  0,  0,  0,  0,  0,  0,  2 }, // Node 5 (Finish)
+  {  2,  2,  2,  0,  0,  0,  0,  0 }, // Node 6 (Right Junc)
+  {  0,  2,  0,  3,  3,  2,  0,  0 }  // Node 7 (Left Junc)
+};
+
+// ================= ROUTE STATE (MEMORY) =================
+String previousNode = "4";   // Starting at node 0
+String currentNode = "6";    // Currently at node 0
+String targetNode = "6";     // Pointing towards node 4
+String remainingRoute = "";
+
+// ================= SENSOR SETUP =================
+int AnalogValue[5] = {0, 0, 0, 0, 0};
+int AnalogPin[5] = {4, 5, 6, 7, 15};
+int threshold = 1500;
+
+// ================= ULTRASONIC SENSOR SETUP =================
+int trigPin = 48;
+int echoPin = 45;
+int stopDistance = 7;
+int consecutiveDetections = 0;
+int requiredDetections = 2;
+
+// ================= MOTOR SETUP =================
+int motorLeftPWM = 37;
+int motorLeftPhase = 38;
+int motorRightPWM = 39;
+int motorRightPhase = 20;
+
+// ================= SPEED SETTINGS =================
+int maxSpeed = 235;
+int cruiseSpeed = 200;
+int junctionSpinSpeed = 180;
+
+// ================= FUNCTION PROTOTYPES =================
+void stopMotors();
+void moveForward(int left, int right);
+void motorReverse(int speed);
+void spinRight(int speed);
+void spinLeft(int speed);
+void perform180Turn();
+void perform90Turn(bool isLeft);
+void handleIntersection();
+void decideTurn(String from, String current, String to);
+bool isPathStraight(String from, String to);
+void connectToWiFi();
+void sendPosition(String position);
+String getRouteFromServer();
+String calculateDijkstraPath(int startNode, int endNode);
+String buildPathFromWaypoints(String waypoints);
+void popNextTarget();
+long getDistance();
+bool connectToServer();
+String readResponse();
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+  delay(2000);
+  Serial.println("\n\n=== ROBOT BOOTING UP ===");
+
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+
+  pinMode(motorLeftPWM, OUTPUT);
+  pinMode(motorLeftPhase, OUTPUT);
+  pinMode(motorRightPWM, OUTPUT);
+  pinMode(motorRightPhase, OUTPUT);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  stopMotors();
+  connectToWiFi();
+
+  // UPDATED: Start at node 0, pointing towards node 4
+  previousNode = "4";  // We're starting at 0
+  currentNode = "0";   // Currently at 0
+  targetNode = "6";    // Pointing towards 4
+  
+  sendPosition(currentNode);
+  Serial.println("Starting at Node 0, pointing towards Node 4");
+  Serial.println("SYSTEM READY.");
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+  long distance = getDistance();
+
+  // Obstacle Handling
+  if (distance < stopDistance && distance > 0) {
+    consecutiveDetections++;
+    if (consecutiveDetections >= requiredDetections) {
+      stopMotors();
+      Serial.println("Obstacle! Waiting...");
+      delay(300);
+      consecutiveDetections = 0;
+      return;
+    }
+  } else {
+    consecutiveDetections = 0;
+  }
+
+  // Line Sensor Reading
+  bool onLine[5];
+  int sensorsActive = 0;
+  for (int i = 0; i < 5; i++) {
+    AnalogValue[i] = analogRead(AnalogPin[i]);
+    onLine[i] = (AnalogValue[i] < threshold);
+    if (onLine[i]) sensorsActive++;
+  }
+
+  // INTERSECTION DETECTION
+  if (sensorsActive >= 3) {
+    stopMotors();
+    delay(100);
+    handleIntersection();
+  }
+  // ===== LINE FOLLOWING LOGIC =====
+  else if (onLine[2] && !onLine[0] && !onLine[4]) {
+    moveForward(maxSpeed, maxSpeed);
+  }
+  else if (onLine[1]) {
+    moveForward(110, cruiseSpeed);
+  }
+  else if (onLine[3]) {
+    moveForward(cruiseSpeed, 110);
+  }
+  else if (onLine[0]) {
+    moveForward (10, 200);
+  }
+  else if (onLine[4]) {
+    moveForward(200, 10);
+  }
+  else {
+    moveForward(cruiseSpeed, cruiseSpeed);
+  }
+}
+
+// ================= INTERSECTION HANDLER =================
+void handleIntersection() {
+  // Debug print showing Previous -> Current
+  Serial.print("\n--- INTERSECTION DETECTED ---");
+  Serial.print(" Coming from: ");
+  Serial.print(previousNode);
+  Serial.print(" | Currently at: ");
+  Serial.println(currentNode);
+
+  sendPosition(currentNode);
+
+  // 1. Get New Route if Empty
+  if (remainingRoute.length() == 0) {
+    stopMotors();
+    Serial.println("Fetching route from server...");
+    String serverResponse = getRouteFromServer();
+    if (serverResponse.length() > 0) {
+      remainingRoute = buildPathFromWaypoints(serverResponse);
+      Serial.print("Full Path: ");
+      Serial.println(remainingRoute);
+    }
+  }
+
+  // 2. Extract Next Target
+  popNextTarget();
+
+  // 3. Skip Redundant Nodes
+  while (targetNode == currentNode && remainingRoute.length() > 0) {
+    Serial.print("Skipping redundant node: ");
+    Serial.println(targetNode);
+    popNextTarget();
+  }
+
+  // If nowhere to go, stop.
+  if (targetNode == currentNode || targetNode == "") {
+    stopMotors();
+    Serial.println("=== ROUTE COMPLETE ===");
+    return;
+  }
+
+  Serial.print("Next Target: ");
+  Serial.println(targetNode);
+
+  // 4. CHECK IF STRAIGHT PATH
+  if (isPathStraight(currentNode, targetNode)) {
+    Serial.println(">>> CONTINUING STRAIGHT");
+    moveForward(maxSpeed, maxSpeed);
+    delay(150);
+    
+    // Update memory for straight path
+    previousNode = currentNode;
+    currentNode = targetNode;
+    return;
+  }
+
+  // 5. EXECUTE TURN (now using previousNode for context)
+  decideTurn(previousNode, currentNode, targetNode);
+
+  // 6. Update Memory
+  previousNode = currentNode;  // Where we were becomes previous
+  currentNode = targetNode;    // Where we're going becomes current
+  
+  Serial.print("Memory updated -> Previous: ");
+  Serial.print(previousNode);
+  Serial.print(" | Current: ");
+  Serial.println(currentNode);
+}
+
+// ================= IMPROVED TURNING LOGIC =================
+void decideTurn(String from, String current, String to) {
+  Serial.print("TURN DECISION: from=");
+  Serial.print(from);
+  Serial.print(" current=");
+  Serial.print(current);
+  Serial.print(" to=");
+  Serial.println(to);
+
+  // **NEW: Check if we're going back to the previous node (U-turn needed)**
+  if (to == from) {
+    Serial.println("Action: 180° TURN - Returning to previous node");
+    perform180Turn();
+    return;
+  }
+
+  bool isLeft = false;
+  bool foundMatch = false;
+
+  // ====================
+  // NODE 6 LOGIC (Right Junction)
+  // ====================
+   if (current == "6") {
+    if (to == "0") {
+      if (from == "2") {
+        foundMatch = true;
+      } else if (from == "1") {
+        isLeft = false;
+        foundMatch = true;
+      }
+    } else if (to == "1") {
+      if (from == "0") {
+        isLeft = true;
+        foundMatch = true;
+      } else if (from == "2") {
+        isLeft = false;
+        foundMatch = true;
+      }
+    }
+   }
+
+  // ====================
+  // NODE 7 LOGIC (Left Junction)
+  // ====================
+   if (current == "7") {
+    if (to == "1") {
+      if (from == "4") {
+        isLeft = true;
+        foundMatch = true;
+      } else if (from == "3") {
+        isLeft = false;
+        foundMatch = true;
+      }
+    } else if (to == "3") {
+      if (from == "4") {
+        foundMatch = true;
+      } else if (from == "1") {
+        isLeft = false;
+        foundMatch = true;
+      }
+    } else if (to == "5") {
+      if (from == "1") {
+        foundMatch = true;
+      } else if (from == "3" || from == "4") {
+        isLeft = (from == "4");
+        foundMatch = true;
+      }
+    }
+  }
+
+  // Execute the turn
+  if (foundMatch) {
+    if (isLeft) {  // <-- SIMPLIFIED (removed == true)
+      Serial.println("Action: 90° LEFT Turn");
+      perform90Turn(true);
+    } else {  // <-- FIXED (was "if else")
+      Serial.println("Action: 90° RIGHT Turn");
+      perform90Turn(false);
+    }
+  } else {
+    Serial.println("WARNING: No turn logic matched! Go straight");
+    moveForward(maxSpeed, maxSpeed);
+    delay(50);
+  }
+}
+
+void perform180Turn() {
+  // Stop first
+  stopMotors();
+  delay(300);
+  
+  // Back up slightly
+  motorReverse(150);
+  delay(300);
+  
+  // Turn enough to get OFF the line first
+  spinRight(200);
+  delay(700);
+  
+  // Keep turning until we find the line again (but with timeout)
+  int sensorsActive = 0;
+  int turnAttempts = 0;
+  int maxAttempts = 50;  // Prevent infinite loop
+  
+  while (sensorsActive < 1 && turnAttempts < maxAttempts) {
+    spinRight(200);
+    
+    // Check sensors
+    sensorsActive = 0;
+    for (int i = 0; i < 5; i++) {
+      if (analogRead(AnalogPin[i]) < threshold) sensorsActive++;
+    }
+    
+    turnAttempts++;
+    delay(50);  // Longer delay between checks
+  }
+  
+  Serial.print("Turn complete. Attempts: ");
+  Serial.println(turnAttempts);
+  
+  // Stop after finding line
+  stopMotors();
+  delay(300);
+  
+  // Move forward a bit to stabilize
+  moveForward(200, 200);
+  delay(100);
+}
+
+// === 90 DEGREE TURN CODE ===
+void perform90Turn(bool isLeft) {
+  stopMotors();
+  delay(300);
+
+  moveForward(200, 200);
+  delay(100);
+
+  if (isLeft)
+    spinLeft(junctionSpinSpeed);
+  else
+    spinRight(junctionSpinSpeed);
+  
+  delay(400);
+
+  int sensorsActive = 0;
+  int turnAttempts = 0;
+  int maxAttempts = 50;
+
+  while (sensorsActive < 1 && turnAttempts < maxAttempts) {
+    if (isLeft)
+      spinLeft(junctionSpinSpeed);
+    else
+      spinRight(junctionSpinSpeed);
+
+    sensorsActive = 0;
+    for (int i = 0; i < 5; i++) {
+      if (analogRead(AnalogPin[i]) < threshold) sensorsActive++;
+    }
+    turnAttempts++;
+    delay(40);
+  }
+
+  stopMotors();
+  delay(300);
+}
+
+// ================= HELPER: DETECT STRAIGHT PATHS =================
+bool isPathStraight(String from, String to) {
+  // Node 0 <-> Node 4 (straight line)
+  if (from == "0" && to == "4") return true;
+  if (from == "4" && to == "0") return true;
+  
+  // Node 7 -> Node 5 or Node 1 (straight)
+  if (from == "7" && (to == "5" || to == "1")) return true;
+  
+  // Node 5 -> Node 7 (straight back)
+  if (from == "5" && to == "7") return true;
+  
+  // Node 1 -> Node 7 (straight back)
+  if (from == "1" && to == "7") return true;
+  
+  return false;
+}
+
+// ================= WIFI & SERVER =================
+void connectToWiFi() {
+  if(WiFi.status() == WL_CONNECTED) return;
+
+  Serial.print("Connecting to network: ");
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println("\nWiFi Connected!");
+}
+
+void sendPosition(String position) {
+  if (!connectToServer()) return;
+
+  String postBody = "position=" + position;
+  
+  client.println("POST /api/arrived/" + teamID + " HTTP/1.1");
+  client.println("Host: " + String(server));
+  client.println("Content-Type: application/x-www-form-urlencoded");
+  client.print("Content-Length: ");
+  client.println(postBody.length());
+  client.println("Connection: close");
+  client.println();
+  client.println(postBody);
+
+  readResponse();
+  client.stop();
+}
+
+String getRouteFromServer() {
+  if (!connectToServer()) return "";
+
+  client.println("GET /api/getRoute/" + teamID + " HTTP/1.1");
+  client.println("Host: " + String(server));
+  client.println("Connection: close");
+  client.println();
+
+  String response = readResponse();
+  client.stop();
+
+  int split = response.indexOf("\r\n\r\n");
+  if (split == -1) return "";
+
+  String body = response.substring(split + 4);
+  body.trim();
+  return body;
+}
+
+bool connectToServer() {
+  if (client.connect(server, port)) {
+    return true;
+  }
+  Serial.println("Server Connection FAILED!");
+  return false;
+}
+
+String readResponse() {
+  unsigned long timeout = millis();
+  while (client.available() == 0) {
+    if (millis() - timeout > 3000) return "";
+  }
+
+  String res = "";
+  while(client.available()) {
+    res += (char)client.read();
+  }
+  return res;
+}
+
+// ================= ROUTE BUILDER (DIJKSTRA HELPERS) =================
+String buildPathFromWaypoints(String waypoints) {
+  String fullPath = "";
+  int currentSearchNode = currentNode.toInt();
+  
+  waypoints.trim();
+
+  while (waypoints.length() > 0) {
+    int commaIndex = waypoints.indexOf(',');
+    String checkpointStr;
+
+    if (commaIndex == -1) {
+      checkpointStr = waypoints;
+      waypoints = "";
+    } else {
+      checkpointStr = waypoints.substring(0, commaIndex);
+      waypoints = waypoints.substring(commaIndex + 1);
+    }
+
+    checkpointStr.trim();
+    int nextCheckpoint = checkpointStr.toInt();
+
+    if (nextCheckpoint == currentSearchNode) {
+      continue;
+    }
+
+    String segment = calculateDijkstraPath(currentSearchNode, nextCheckpoint);
+    if (segment.length() > 0) {
+      if (fullPath.length() > 0) fullPath += ",";
+      fullPath += segment;
+    }
+
+    currentSearchNode = nextCheckpoint;
+  }
+
+  return fullPath;
+}
+
+String calculateDijkstraPath(int startNode, int endNode) {
+  if (startNode == endNode) return "";
+
+  int dist[V], parent[V];
+  bool sptSet[V];
+
+  for (int i = 0; i < V; i++) {
+    dist[i] = INF;
+    sptSet[i] = false;
+    parent[i] = -1;
+  }
+
+  dist[startNode] = 0;
+
+  for (int count = 0; count < V - 1; count++) {
+    int u = -1;
+    for (int i = 0; i < V; i++)
+      if (!sptSet[i] && (u == -1 || dist[i] < dist[u]))
+        u = i;
+
+    if (dist[u] == INF) break;
+
+    sptSet[u] = true;
+
+    for (int v = 0; v < V; v++) {
+      if (!sptSet[v] && graph[u][v] && dist[u] != INF && dist[u] + graph[u][v] < dist[v]) {
+        dist[v] = dist[u] + graph[u][v];
+        parent[v] = u;
+      }
+    }
+  }
+
+  String path = "";
+  int curr = endNode;
+  while (curr != -1) {
+    if (curr == startNode) break;
+    if (path == "")
+      path = String(curr);
+    else
+      path = String(curr) + "," + path;
+    curr = parent[curr];
+  }
+
+  return path;
+}
+
+void popNextTarget() {
+  remainingRoute.trim();
+  
+  if (remainingRoute.length() == 0) {
+    targetNode = currentNode;
+    return;
+  }
+
+  int commaIndex = remainingRoute.indexOf(',');
+  
+  if (commaIndex == -1) {
+    targetNode = remainingRoute;
+    remainingRoute = "";
+  } else {
+    targetNode = remainingRoute.substring(0, commaIndex);
+    remainingRoute = remainingRoute.substring(commaIndex + 1);
+  }
+
+  targetNode.trim();
+}
+
+// ================= HARDWARE DRIVERS =================
+long getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  long duration = pulseIn(echoPin, HIGH, 20000);
+  return (duration == 0) ? 999 : (duration / 2) * 0.0343;
+}
+
+void moveForward(int left, int right) {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, left);
+  analogWrite(motorRightPWM, right);
+}
+
+void motorReverse(int speed) {
+  digitalWrite(motorLeftPhase, LOW);
+  digitalWrite(motorRightPhase, LOW);
+  analogWrite(motorLeftPWM, speed);
+  analogWrite(motorRightPWM, speed);
+}
+
+void spinLeft(int speed) {
+  digitalWrite(motorLeftPhase, LOW);
+  digitalWrite(motorRightPhase, HIGH);
+  analogWrite(motorLeftPWM, speed);
+  analogWrite(motorRightPWM, speed);
+}
+
+void spinRight(int speed) {
+  digitalWrite(motorLeftPhase, HIGH);
+  digitalWrite(motorRightPhase, LOW);
+  analogWrite(motorLeftPWM, speed);
+  analogWrite(motorRightPWM, speed);
+}
+
+void stopMotors() {
+  analogWrite(motorLeftPWM, 0);
+  analogWrite(motorRightPWM, 0);
+}
